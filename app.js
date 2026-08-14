@@ -27,7 +27,7 @@ const elements = {
   resultEmpty: document.querySelector("#resultEmpty"),
   resultContent: document.querySelector("#resultContent"),
   resultState: document.querySelector("#resultState"),
-  tokensPerDollar: document.querySelector("#tokensPerDollar"),
+  costPerMToken: document.querySelector("#costPerMToken"),
   availableTokens: document.querySelector("#availableTokens"),
   effectiveCost: document.querySelector("#effectiveCost"),
   usedRate: document.querySelector("#usedRate"),
@@ -46,10 +46,21 @@ function loadHistory() {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
 
-    return parsed
+    const records = parsed
       .filter(isValidRecord)
+      .map(normalizeRecord)
       .sort((left, right) => new Date(right.updatedAt) - new Date(left.updatedAt))
       .slice(0, MAX_HISTORY_ITEMS);
+
+    if (JSON.stringify(records) !== JSON.stringify(parsed)) {
+      try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(records));
+      } catch {
+        // The current page remains usable when the browser blocks storage cleanup.
+      }
+    }
+
+    return records;
   } catch {
     return [];
   }
@@ -64,10 +75,27 @@ function isValidRecord(record) {
       Number.isFinite(Number(record.multiplier)) &&
       Number.isFinite(Number(record.exchangeRate)) &&
       Number.isFinite(Number(record.availableTokens)) &&
+      Number(record.availableTokens) > 0 &&
       Number.isFinite(Number(record.effectiveCostUsd)) &&
-      Number.isFinite(Number(record.tokensPerDollar)) &&
+      Number(record.effectiveCostUsd) > 0 &&
+      typeof record.websiteUrl === "string" &&
+      record.websiteUrl.length > 0 &&
+      typeof record.websiteKey === "string" &&
+      record.websiteKey.length > 0 &&
       typeof record.updatedAt === "string"
   );
+}
+
+function normalizeRecord(record) {
+  const existingCost = Number(record.costPerMToken);
+  const costPerMToken = Number.isFinite(existingCost) && existingCost > 0
+    ? existingCost
+    : Number(record.effectiveCostUsd) / Number(record.availableTokens);
+
+  return {
+    ...record,
+    costPerMToken,
+  };
 }
 
 function formatNumber(value, maximumFractionDigits = 4) {
@@ -173,12 +201,12 @@ function normalizeWebsiteUrl(rawValue) {
 function calculateValues(rechargeAmount, equivalentUsd, multiplier, exchangeRate) {
   const availableTokens = equivalentUsd / multiplier / MODEL_PRICE_PER_M_TOKEN;
   const effectiveCostUsd = rechargeAmount / exchangeRate;
-  const tokensPerDollar = availableTokens / effectiveCostUsd;
+  const costPerMToken = effectiveCostUsd / availableTokens;
 
   return {
     availableTokens,
     effectiveCostUsd,
-    tokensPerDollar,
+    costPerMToken,
   };
 }
 
@@ -186,11 +214,11 @@ function updateResult(values, statusText) {
   elements.resultEmpty.hidden = true;
   elements.resultContent.hidden = false;
   elements.resultState.textContent = statusText;
-  elements.tokensPerDollar.textContent = formatNumber(values.tokensPerDollar, 4);
+  elements.costPerMToken.textContent = formatNumber(values.costPerMToken, 4);
   elements.availableTokens.textContent = `${formatNumber(values.availableTokens, 4)} M`;
   elements.effectiveCost.textContent = formatUsd(values.effectiveCostUsd);
   elements.usedRate.textContent = formatNumber(values.exchangeRate, 4);
-  elements.formulaNote.textContent = `可用 M Tokens ${formatNumber(values.availableTokens, 4)} = ${formatUsd(values.equivalentUsd)} / ${formatNumber(values.multiplier, 4)} / $${MODEL_PRICE_PER_M_TOKEN}`;
+  elements.formulaNote.textContent = `真实成本 ${formatUsd(values.costPerMToken)} / M Tokens = ${formatUsd(values.effectiveCostUsd)} / ${formatNumber(values.availableTokens, 4)} M Tokens`;
 
   elements.resultPanel.classList.remove("is-updating");
   void elements.resultPanel.offsetWidth;
@@ -213,7 +241,7 @@ function createRecord(input, website, verification, rateSnapshot) {
     rateDate: rateSnapshot.date,
     availableTokens: values.availableTokens,
     effectiveCostUsd: values.effectiveCostUsd,
-    tokensPerDollar: values.tokensPerDollar,
+    costPerMToken: values.costPerMToken,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -228,6 +256,10 @@ function persistHistory() {
 }
 
 function saveRecord(record) {
+  if (!record.websiteKey) {
+    return { overwritten: false, persisted: false };
+  }
+
   let overwritten = false;
 
   if (record.websiteKey) {
@@ -296,8 +328,8 @@ function renderHistory() {
 
     const result = document.createElement("div");
     result.className = "record-result";
-    appendText(result, "strong", formatNumber(record.tokensPerDollar, 4));
-    appendText(result, "span", "M Tokens / $");
+    appendText(result, "strong", formatNumber(record.costPerMToken, 4));
+    appendText(result, "span", "$ / M Tokens");
 
     const status = statusPresentation(record);
     const badge = appendText(item, "span", status.label, `status-badge ${status.className}`);
@@ -315,10 +347,6 @@ function withTimeout(signalController, timeoutMs) {
 }
 
 async function checkWebsite(website) {
-  if (!website) {
-    return { status: "unverified", detail: "未提供官网链接" };
-  }
-
   const controller = new AbortController();
   const timeoutId = withTimeout(controller, 7000);
 
@@ -419,10 +447,15 @@ async function handleCalculate(event) {
     date: state.rateDate,
   };
   const calculation = calculateValues(input.rechargeAmount, input.equivalentUsd, input.multiplier, rateSnapshot.value);
-  updateResult({ ...input, ...calculation, exchangeRate: rateSnapshot.value }, website ? "正在校验官网" : "正在保存");
+  if (!website) {
+    updateResult({ ...input, ...calculation, exchangeRate: rateSnapshot.value }, "未关联官网，未保存");
+    return;
+  }
+
+  updateResult({ ...input, ...calculation, exchangeRate: rateSnapshot.value }, "正在校验官网");
 
   elements.calculateButton.disabled = true;
-  elements.calculateButton.textContent = website ? "正在校验官网" : "正在保存";
+  elements.calculateButton.textContent = "正在校验官网";
 
   const verification = await checkWebsite(website);
   const record = createRecord(input, website, verification, rateSnapshot);
@@ -442,7 +475,7 @@ async function handleCalculate(event) {
   }
 
   elements.calculateButton.disabled = false;
-  elements.calculateButton.textContent = "计算并保存";
+  elements.calculateButton.textContent = "计算";
 }
 
 function clearHistory() {
