@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="中转站充值金额与真实 M Tokens / $ 成本换算器" />
+    <meta name="theme-color" content="#f5f6f3" />
+    <title>中转站计算器 | 真实 M Tokens / $</title>
+    <script>
+      (() => {
+        const saved = localStorage.getItem("transfer-station-theme");
+        const preferred = saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.dataset.theme = preferred;
+      })();
+    </script>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <a class="brand" href="./" aria-label="中转站计算器首页">
+          <span class="brand-mark" aria-hidden="true">TS</span>
+          <span>中转站计算器</span>
+        </a>
+        <div class="topbar-tools">
+          <span class="rate-status" id="rateStatus" role="status">汇率加载中</span>
+          <button class="theme-toggle" id="themeToggle" type="button" aria-label="切换颜色主题">深色模式</button>
+        </div>
+      </header>
+
+      <main>
+        <section class="hero" aria-labelledby="pageTitle">
+          <div class="hero-copy">
+            <p class="eyebrow">成本换算工具</p>
+            <h1 id="pageTitle">把充值金额，换成真实成本。</h1>
+            <p class="hero-lede">输入充值金额、等效美元和倍率，查看每 1 美元能买到多少 M Tokens。</p>
+            <p class="hero-note">模型基准固定为 gpt-5.6-sol，单价 $5 / M Tokens。数据只保存在当前浏览器。</p>
+          </div>
+
+          <div class="calculator-layout">
+            <form class="calculator-panel" id="calculatorForm" novalidate>
+              <div class="panel-heading">
+                <div>
+                  <span class="panel-label">输入参数</span>
+                  <h2>开始一次计算</h2>
+                </div>
+                <span class="model-chip">gpt-5.6-sol</span>
+              </div>
+
+              <div class="field-grid">
+                <label class="field">
+                  <span class="field-label">充值金额</span>
+                  <span class="field-unit">CNY</span>
+                  <input id="rechargeAmount" name="rechargeAmount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="例如 84" required />
+                </label>
+
+                <label class="field">
+                  <span class="field-label">充值等效美元</span>
+                  <span class="field-unit">USD</span>
+                  <input id="equivalentUsd" name="equivalentUsd" type="number" min="0" step="0.01" inputmode="decimal" placeholder="例如 84" required />
+                </label>
+
+                <label class="field">
+                  <span class="field-label">计算倍率</span>
+                  <span class="field-unit">倍</span>
+                  <input id="multiplier" name="multiplier" type="number" min="0" step="0.01" inputmode="decimal" placeholder="例如 0.15" required />
+                </label>
+
+                <div class="field field-fixed">
+                  <span class="field-label">模型单价</span>
+                  <span class="field-unit">USD / M</span>
+                  <div class="fixed-value"><strong>5</strong><span>固定基准</span></div>
+                </div>
+              </div>
+
+              <div class="rate-row">
+                <div>
+                  <span class="field-label">当前汇率</span>
+                  <span class="rate-caption">1 USD = <strong id="exchangeRate">--</strong> CNY</span>
+                </div>
+                <button class="text-button" id="refreshRate" type="button">刷新汇率</button>
+              </div>
+
+              <label class="field url-field">
+                <span class="field-label">官网链接 <em>可选</em></span>
+                <input id="websiteUrl" name="websiteUrl" type="url" inputmode="url" autocomplete="url" placeholder="https://example.com" />
+                <span class="field-help">提交时会尝试访问。跨域网站无法读取状态时，会按网络可达记录。</span>
+              </label>
+
+              <p class="form-error" id="formError" role="alert" hidden></p>
+              <button class="primary-button" id="calculateButton" type="submit">计算并保存</button>
+            </form>
+
+            <section class="result-panel" id="resultPanel" aria-live="polite" aria-labelledby="resultTitle">
+              <div class="panel-heading result-heading">
+                <div>
+                  <span class="panel-label">换算结果</span>
+                  <h2 id="resultTitle">真实成本</h2>
+                </div>
+                <span class="result-state" id="resultState">等待输入</span>
+              </div>
+
+              <div class="result-empty" id="resultEmpty">
+                <span class="empty-mark" aria-hidden="true">+</span>
+                <p>填入左侧参数，结果会在这里出现。</p>
+              </div>
+
+              <div id="resultContent" hidden>
+                <div class="headline-result">
+                  <span class="result-label">真实 M Tokens / $</span>
+                  <div class="result-number"><strong id="tokensPerDollar">0</strong><span>M Tokens / $</span></div>
+                </div>
+
+                <div class="result-stats">
+                  <div class="result-stat">
+                    <span>可用 Token</span>
+                    <strong id="availableTokens">0 M</strong>
+                  </div>
+                  <div class="result-stat">
+                    <span>充值折算</span>
+                    <strong id="effectiveCost">$0</strong>
+                  </div>
+                  <div class="result-stat">
+                    <span>使用汇率</span>
+                    <strong id="usedRate">0</strong>
+                  </div>
+                </div>
+
+                <p class="formula-note" id="formulaNote">可用 M Tokens = 等效美元 / 倍率 / 5</p>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="history-section" aria-labelledby="historyTitle">
+          <div class="section-heading">
+            <div>
+              <span class="panel-label">本地记录</span>
+              <h2 id="historyTitle">计算记录</h2>
+              <p>同一官网链接会去重，后一次计算会覆盖先前记录。</p>
+            </div>
+            <button class="ghost-button" id="clearHistory" type="button">清空记录</button>
+          </div>
+
+          <div class="history-list" id="historyList"></div>
+          <div class="history-empty" id="historyEmpty" hidden>
+            <p>还没有计算记录。</p>
+            <span>提交一次计算后，结果会留在这里。</span>
+          </div>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <p>公式：可用 M Tokens = 等效美元 / 倍率 / $5</p>
+        <p>成本分母 = 充值金额(CNY) / 当前 USD-CNY 汇率</p>
+      </footer>
+    </div>
+  </body>
+</html>
